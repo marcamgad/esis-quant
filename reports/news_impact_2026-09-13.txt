@@ -1,0 +1,47 @@
+NEWS IMPACT — your holdings, last 120 days (rules_v1, NOT yet validated by stage 4)
+Low-confidence calls (search-only links) are hidden. Duplicate coverage of one event counts once.
+
+AMOC  (net tone +3 across 1 distinct event(s), 5 articles)
+  2026-07-30  ▲ favourable    earnings_up       strength 3  conf high
+      ""أموك" تضاعف أرباحها إلى 1.9 مليار جنيه في النصف الأول"
+      why: Reported profit improvement (latest known year to 2025-06-30: net income 1,488, revenue 37,623, growth +11%).
+
+CRST  (net tone +1 across 1 distinct event(s), 1 articles)
+  2026-06-17  ▲ favourable    stake_increase    strength 1  conf high
+      "مساهم رئيسي يرفع حصته في أسهم كرستمارك للمقاولات والتطوير العقاري إلى 15.3%"
+      why: A major holder is adding shares, a sign of insider confidence (latest known year to 2025-12-31: net income 77.70, revenue 281).
+
+GSSC: no classified news in the window
+
+GTWL: no classified news in the window
+
+KASABF: no classified news in the window
+
+KORA  (net tone +0 across 4 distinct event(s), 6 articles)
+  2026-06-11  ■ neutral       ipo_listing       strength 1  conf medium
+      "Korra Energi Debuts on EGX"
+      why: Ipo listing: no clear direction on its own (no fundamentals known at that date).
+  2026-05-25  ■ neutral       ipo_listing       strength 1  conf medium
+      "Korra Energi IPO oversubscribed 31.35 times on strong investor demand"
+      why: Ipo listing: no clear direction on its own (no fundamentals known at that date).
+  2026-05-23  ■ neutral       management        strength 1  conf medium
+      "EGX listing aims to broaden investor base beyond fundraising: Korra Energi CEO"
+      why: Management: no clear direction on its own (no fundamentals known at that date).
+  2026-05-18  ■ neutral       ipo_listing       strength 1  conf medium
+      "Korra Energi opens the subscription window for highly-anticipated IPO"
+      why: Ipo listing: no clear direction on its own (no fundamentals known at that date).
+
+MOED: no classified news in the window
+
+OIH  (net tone -5 across 3 distinct event(s), 4 articles)
+  2026-08-30  ▼ unfavourable  index_drop        strength 2  conf high
+      "Orascom Investment Holding S.A.E.(CASE: OIH) dropped from EGX 30 Index"
+      why: Index exclusion forces tracker selling. (latest known year to 2025-12-31: net income -534, revenue 1,394, growth +190%, 3 loss year(s) in a row).
+  2026-08-20  ■ neutral       management        strength 1  conf medium
+      "Orascom Investment appoints Naguib Sawiris as Chairman"
+      why: Management: no clear direction on its own (latest known year to 2025-12-31: net income -534, revenue 1,394, growth +190%, 3 loss year(s) in a row).
+  2026-07-06  ▼ unfavourable  earnings_down     strength 3  conf medium
+      "Orascom Investment Holding swings deeper into the red despite a 4x revenue surge"
+      why: Continues a 3-year loss run (latest known year to 2025-12-31: net income -534, revenue 1,394, growth +190%, 3 loss year(s) in a row).
+
+TALM: no classified news in the window

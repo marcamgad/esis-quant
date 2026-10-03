@@ -1,0 +1,21 @@
+# Data and backups -- never in version control (size, and they hold the real book)
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+*_backup_*.db
+
+# Generated outputs
+logs/
+charts/
+orders/
+/*.csv
+models/**/checkpoints/
+*.pt
+*.npz
+
+# Python / tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
