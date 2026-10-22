@@ -9,6 +9,7 @@ populated by anything implemented so far.
 """
 
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 
@@ -401,9 +402,18 @@ def get_connection():
     immediately raising "database is locked" -- both matter once data
     collection, scraping and modeling can run in parallel.
     """
-    conn = sqlite3.connect(config.DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
+    # ESIS_DB_READONLY=1 (set by the MCP server, esis_mcp): every connection opened
+    # here is read-only at the ENGINE level, so no code path reached through a
+    # tool can write. The watchlist's own writer opens a separate connection
+    # guarded to its four tables (ops/watchlist._writer).
+    if os.environ.get("ESIS_DB_READONLY") == "1":
+        conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON;")
+    else:
+        conn = sqlite3.connect(config.DB_PATH, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=30000;")
     try:
         yield conn

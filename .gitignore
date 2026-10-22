@@ -19,3 +19,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .claude/
+.pytest_db/
+
+# Personal: the morning briefs show the real account, holdings and cash
+reports/brief_*.md
+analysis/_profit_estimate_cache.json
+# Local machine paths; copy .mcp.json.example to .mcp.json
+.mcp.json
+.venv/
+# Full news-article text belongs to its publishers; rebuild it locally
+kaggle_notebooks/sentiment_training_data.csv

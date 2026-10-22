@@ -554,6 +554,40 @@ def catchup(decision: str = "MISSED", note: str = "no action taken (missed popup
     return int(len(pend))
 
 
+def set_invested_capital(amount: float, note: str = "") -> None:
+    """Total money you have put into the account, net of withdrawals.
+
+    WHY. The first snapshot (7,555 EGP in August) was not the money invested:
+    more went in later without being recorded, so "since start" read +63% on an
+    account that was actually down about 100 EGP. Profit is measured against
+    this figure when it is set. Deposits recorded later via record_cash_flow are
+    added on top.
+    """
+    now = pd.Timestamp.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS account_capital (as_of TEXT PRIMARY KEY, "
+                     "invested REAL NOT NULL, note TEXT)")
+        conn.execute("INSERT OR REPLACE INTO account_capital (as_of, invested, note) VALUES (?,?,?)",
+                     (now, float(amount), note or None))
+
+
+def invested_capital():
+    """Latest invested-capital figure plus any deposits/withdrawals recorded after it."""
+    with get_connection() as conn:
+        try:
+            r = conn.execute("SELECT as_of, invested FROM account_capital ORDER BY as_of DESC LIMIT 1").fetchone()
+        except Exception:  # noqa: BLE001
+            return None
+        if not r:
+            return None
+        try:
+            later = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM cash_flows WHERE recorded_at > ?",
+                                 (r["as_of"],)).fetchone()[0]
+        except Exception:  # noqa: BLE001
+            later = 0.0
+    return float(r["invested"]) + float(later or 0.0)
+
+
 def record_daily_total(total_egp: float, note: str = "") -> dict:
     """Record the day's ENDING total book value, typed in by hand.
 
@@ -579,8 +613,10 @@ def record_daily_total(total_egp: float, note: str = "") -> dict:
             "ON CONFLICT(date) DO UPDATE SET user_value=excluded.user_value, "
             "decision=COALESCE(excluded.decision, user_daily_snapshot.decision)",
             (today, float(total_egp), note or None))
-    start = float(first["user_value"]) if first else float(total_egp)
+    cap = invested_capital()
+    start = cap if cap else (float(first["user_value"]) if first else float(total_egp))
     out = {"date": today, "total": float(total_egp), "start": start,
+           "basis": "invested capital" if cap else "first snapshot",
            "since_start_pct": (total_egp / start - 1) if start > 0 else 0.0,
            "prev": float(prev["user_value"]) if prev else None}
     out["day_pct"] = (total_egp / out["prev"] - 1) if out["prev"] else None

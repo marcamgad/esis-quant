@@ -87,7 +87,68 @@ def load_price_returns(tickers=None, use_calendar: bool = True) -> pd.DataFrame:
         from data.calendar import valid_trading_days
         good = valid_trading_days(wide)
         wide = wide.loc[wide.index.isin(good)]
+    # Splits/bonuses two sources agree on but the vendor never adjusted
+    # (HDBK 2:1, EFID 1.5:1 ...). Self-disabling: see data/ca_factors.py.
+    from data.ca_factors import adjust_panel
+    wide = adjust_panel(wide)
     return wide.pct_change()
+
+
+def load_fill_ratio(tickers=None) -> pd.DataFrame:
+    """Typical price / close per (date, ticker): the in-session fill proxy.
+
+    WHY NOT THE OPEN. EGX opens are not real: in 97% of rows (Yahoo and S&P
+    alike) the stored open equals the previous close. A "T+1 open fill" would
+    therefore be the old close-fill assumption under another name. The typical
+    price (H+L+C)/3 of the fill day is the standard VWAP proxy; against 16 real
+    broker fills (Aug 2026) it tracked actual shortfall with correlation 0.97,
+    +1.77% vs +2.34% actual, every fill inside the day's range.
+
+    Unit-free, so it is valid on the adjusted series. Days with no range
+    (high == low, or no volume) get 1.0: no information, no adjustment.
+    """
+    with get_connection() as conn:
+        q = "SELECT ticker, date, high, low, close, volume FROM daily_ohlcv WHERE close > 0"
+        params = ()
+        if tickers:
+            q += " AND ticker IN (" + ",".join(["?"] * len(tickers)) + ")"
+            params = tuple(tickers)
+        px = pd.read_sql(q, conn, params=params, parse_dates=["date"])
+    ok = (px["high"] > px["low"]) & (px["volume"].fillna(0) > 0) & px["high"].notna() & px["low"].notna()
+    px["ratio"] = np.where(ok, (px["high"] + px["low"] + px["close"]) / (3 * px["close"]), 1.0)
+    return px.pivot_table(index="date", columns="ticker", values="ratio", aggfunc="last").sort_index()
+
+
+def fill_adjustment(dw: pd.Series, hold: pd.DatetimeIndex, returns_wide: pd.DataFrame,
+                    ratio: pd.DataFrame, lag: int = 1, slippage: float = 0.0) -> pd.Series:
+    """Per-day return correction for executing a rebalance AFTER the signal.
+
+    The default engine assumes the new book is held from the signal close.
+    Here the trade fills at the typical price `lag` sessions later:
+      * before the fill day the OLD book is still held: correction -sum(dw * r)
+      * on the fill day, bought weight earns close/typical - 1 instead of the
+        full-day return; sold weight earns typical/prev_close - 1 instead of 0
+      * `slippage` is charged on traded weight on top (one side each)
+    Only TRADED weight is affected; an unchanged holding is untouched.
+    """
+    out = pd.Series(0.0, index=hold)
+    if len(hold) == 0 or dw.abs().sum() == 0:
+        return out
+    lag = max(1, int(lag))
+    names = dw.index
+    for k in range(min(lag - 1, len(hold))):
+        r = returns_wide.loc[hold[k]].reindex(names).fillna(0.0)
+        out.iloc[k] = -float((dw * r).sum())
+    if lag - 1 >= len(hold):
+        return out
+    d = hold[lag - 1]
+    r = returns_wide.loc[d].reindex(names).fillna(0.0)
+    tpr = ratio.reindex(index=[d], columns=names).iloc[0].fillna(1.0) if d in ratio.index \
+        else pd.Series(1.0, index=names)
+    buy, sell = dw.clip(lower=0), (-dw).clip(lower=0)
+    out.iloc[lag - 1] = float((buy * ((1.0 / tpr - 1.0) - r)).sum() + (sell * (tpr * (1.0 + r) - 1.0)).sum()
+                              - slippage * dw.abs().sum())
+    return out
 
 
 def load_value_traded(tickers=None) -> pd.DataFrame:
@@ -111,7 +172,18 @@ class BacktestEngine:
                  min_names: int = 5, max_weight: float = 0.15, tradable_only: bool = True,
                  min_window_coverage: float = MIN_WINDOW_COVERAGE,
                  aum_egp: float = None, adv_lookback: int = None,
-                 use_fee_schedule: bool = True):
+                 use_fee_schedule: bool = True, fill: str = "close", fill_lag: int = 1,
+                 fill_slippage: float = 0.0):
+        # EXECUTION MODEL (2026-10-03). "close": the book changes at the signal
+        # close (the historical assumption, kept as the default so every past
+        # result stays reproducible). "typical": trades fill at the typical price
+        # `fill_lag` sessions after the signal -- what manual execution actually
+        # gets (see load_fill_ratio). The live account's fills came 2 sessions
+        # after the signal and ~0.57% above the typical price.
+        if fill not in ("close", "typical"):
+            raise ValueError("fill must be 'close' or 'typical'")
+        self.fill, self.fill_lag, self.fill_slippage = fill, int(fill_lag), float(fill_slippage)
+        self._fill_ratio = None
         self.rebalance_days = rebalance_days
         self.top_fraction = top_fraction
         self.weighting = weighting
@@ -211,6 +283,8 @@ class BacktestEngine:
             held = returns_wide.loc[window, target.index] if len(target) else pd.DataFrame(index=window)
             # daily portfolio gross return = sum_i w_i * r_i (missing -> 0, treated as cash)
             daily = held.mul(target, axis=1).sum(axis=1, min_count=1).fillna(0.0) if len(target) else pd.Series(0.0, index=window)
+            if self.fill == "typical":
+                daily = daily + self._execution(dw, window, returns_wide).values
             gross_ret.loc[window] = daily.values
             net = daily.copy()
             net.iloc[0] = net.iloc[0] - cost  # charge the rebalance cost on the first held day
@@ -227,6 +301,12 @@ class BacktestEngine:
                     float(nav.iloc[-1]) if len(nav) else float("nan"))
         return {"net_returns": net_ret, "gross_returns": gross_ret, "nav": nav,
                 "turnover": turnovers, "weights": weights_hist, "rebalance_dates": rebal_dates}
+
+    def _execution(self, dw: pd.Series, hold, returns_wide: pd.DataFrame) -> pd.Series:
+        if self._fill_ratio is None:
+            self._fill_ratio = load_fill_ratio(list(returns_wide.columns))
+        return fill_adjustment(dw, hold, returns_wide, self._fill_ratio,
+                               lag=self.fill_lag, slippage=self.fill_slippage)
 
     def _schedule_cost(self, dw: pd.Series, T) -> float:
         """Rebalance cost from the REAL fee schedule (backtest/fees.py): a flat
@@ -370,6 +450,8 @@ class BacktestEngine:
                 continue
             held = returns_wide.loc[hold, target.index]
             daily = held.mul(target, axis=1).sum(axis=1, min_count=1).fillna(0.0)
+            if self.fill == "typical":
+                daily = daily + self._execution(dw, hold, returns_wide).values
             gross_ret.loc[hold] = daily.values
             net = daily.copy()
             net.iloc[0] -= cost
@@ -389,8 +471,13 @@ class BacktestEngine:
 
 
 def equal_weight_benchmark(returns_wide: pd.DataFrame, start=None) -> pd.Series:
-    """Equal-weight-all-names daily return -- a fair 'own the market' baseline
-    (EGX30 index history is unreliable in this DB, see config note).
+    """Equal-weight-all-names daily return.
+
+    NOT the market (2026-10-04): since 2016 it returned ~33-35%/yr against the
+    real EGX30's ~21% (data/market.py). Daily rebalancing of thinly traded names
+    books bid-ask bounce as return, and the universe holds only survivors. Use
+    it only to compare strategies built from the SAME universe; use
+    data.market.returns() for "the market".
     """
     r = returns_wide.copy()
     if start is not None:

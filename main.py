@@ -375,6 +375,17 @@ def run_daily_job(send_alert: bool = False, refresh_days: int = 30):
     except Exception as exc:
         logger.warning("reference refresh skipped (non-fatal): %s", exc)
 
+    # Dated history for the names you HOLD, so a position Yahoo does not carry
+    # (AIHC, thin CRST) is still measurable. Never overwrites, never adds dates.
+    try:
+        from data.stockanalysis import backfill_history
+        from ops.portfolio_tracker import holdings as _holdings
+        held = _holdings()[0]["ticker"].tolist()
+        if held:
+            logger.info("held-name history backfill: %s", backfill_history(held))
+    except Exception as exc:
+        logger.warning("held-name history backfill skipped (non-fatal): %s", exc)
+
     build_tradable_universe()
     from models.regime_pipeline import run_regime_detection
     # Frozen vintages: the daily run only filters forward (seconds). The
@@ -387,6 +398,12 @@ def run_daily_job(send_alert: bool = False, refresh_days: int = 30):
     ens = refresh_if_stale()
     logger.info("regime ensemble: rebuilt=%s last_date=%s fits=%s",
                 ens.get("rebuilt"), ens.get("last_date"), ens.get("n_fits"))
+
+    # Sentinel, AFTER the fetch and regime refresh: a HALT set while data was
+    # stale must be re-judged on the data this run just brought in.
+    from ops.sentinel import run as _sentinel, format_brief
+    snt = _sentinel(with_tasks=False)
+    logger.info("Sentinel:\n%s", format_brief(snt))
 
     quality = data_quality_report()
     logger.info("Data quality:\n%s", format_report(quality))

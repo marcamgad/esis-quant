@@ -52,6 +52,11 @@ def generate_trade_list(lookback: int = 180, max_weight: float = 0.15,
         raise RuntimeError("generate_trade_list: LIVE_MIN_VAR_ONLY is False. Signal selection "
                            "measured NEGATIVE (-18% Brinson selection) and must not trade live.")
 
+    if not skip_quality_gate:
+        # Sentinel HALT (Stage 1): a critical liveness/freshness failure stops the
+        # ticket even if this function's own data checks would pass.
+        from ops.agent_guard import assert_not_halted
+        assert_not_halted()
     quality = None if skip_quality_gate else assert_data_fit_to_trade()
 
     rets = load_price_returns()          # calendar-filtered (CAL-01)

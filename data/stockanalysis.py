@@ -221,6 +221,81 @@ def fill_missing_prices(df: pd.DataFrame = None, max_gap_sessions: int = 30) -> 
     return {"filled": filled, "names": names, "through": str(latest.date())}
 
 
+HISTORY_URL = "https://stockanalysis.com/quote/egx/{t}/history/"
+_HIST_OBJ = re.compile(r'\{(a:[^{}]*?t:"\d{4}-\d{2}-\d{2}"[^{}]*)\}')
+_HIST_KV = re.compile(r'(\w+):("?[-\w.:]+"?)')
+
+
+def parse_history(html: str) -> pd.DataFrame:
+    """Daily bars embedded in a stockanalysis /history/ page (about 6 months,
+    S&P Global data, one dated row per session)."""
+    out = []
+    for obj in _HIST_OBJ.findall(html):
+        d = dict(_HIST_KV.findall(obj))
+        try:
+            out.append({"date": pd.Timestamp(d["t"].strip('"')), "open": float(d["o"]),
+                        "high": float(d["h"]), "low": float(d["l"]), "close": float(d["c"]),
+                        "adjusted_close": float(d["a"]), "volume": float(d.get("v", 0) or 0)})
+        except (KeyError, ValueError):
+            continue
+    if not out:
+        return pd.DataFrame()
+    return pd.DataFrame(out).drop_duplicates("date").set_index("date").sort_index()
+
+
+def backfill_history(tickers) -> dict:
+    """Fill DATED history from stockanalysis for names Yahoo does not cover.
+
+    WHY (2026-10-03). CRST and AIHC were 79% of the live book and the system could
+    measure neither: Yahoo has no rows for AIHC at all and only 24 for CRST, yet
+    stockanalysis carries six months of dated daily bars for both.
+
+    WHY THIS DOES NOT BREAK THE RULE ABOVE. That rule bans UNTIMESTAMPED prices.
+    These rows are dated per session by the source. The same guards as
+    fill_missing_prices still apply:
+      * written as source='sa_history', ranked below 'broker' and 'vendor';
+      * INSERT OR IGNORE: never overwrites an existing row;
+      * only on dates data.calendar.valid_trading_days has already accepted, so
+        this source can never create a session or become the newest date.
+    """
+    from data.calendar import valid_trading_days
+    from data.collectors import DataCollector
+    from data.fundamentals import _fetch
+    import time
+
+    sessions = set(valid_trading_days())
+    stored, per = 0, {}
+    for t in tickers:
+        try:
+            h = parse_history(_fetch(HISTORY_URL.format(t=t)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("backfill_history %s: %s", t, exc)
+            continue
+        h = h[h.index.isin(sessions)]
+        rows = [(t, d.strftime("%Y-%m-%d"), r.open, r.high, r.low, r.close, r.volume,
+                 r.close * r.volume, r.adjusted_close) for d, r in h.iterrows()]
+        with get_connection() as conn:
+            DataCollector._ensure_source_column(conn)
+            before = conn.total_changes
+            # A DATED bar outranks an UNDATED 'reference' fill. fill_missing_prices
+            # stamps the listing page's current price on the newest session, which
+            # put CRST's 29 Sep close (2.48) on 28 Sep (true close 3.10) -- a fake
+            # -29% day that INSERT OR IGNORE would have preserved forever.
+            dates = [r[1] for r in rows]
+            if dates:
+                conn.execute(f"DELETE FROM daily_ohlcv WHERE ticker = ? AND source = 'reference' "
+                             f"AND date IN ({','.join('?' * len(dates))})", (t, *dates))
+            conn.executemany(
+                "INSERT OR IGNORE INTO daily_ohlcv (ticker, date, open, high, low, close, volume, "
+                "value_traded_egp, adjusted_close, source) VALUES (?,?,?,?,?,?,?,?,?,'sa_history')", rows)
+            n = conn.total_changes - before
+        stored += n
+        per[t] = n
+        time.sleep(0.7)
+    logger.info("backfill_history: %d row(s) %s", stored, per)
+    return {"stored": stored, "per_ticker": per}
+
+
 def refresh() -> dict:
     """Fetch, store reference data, fill vendor gaps, and cross-check."""
     df = fetch_egx_listing()

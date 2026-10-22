@@ -30,6 +30,26 @@ PRE-REGISTERED DESIGN (fixed in this docstring before any result was seen):
                (brokers publish forecasts, e.g. Pharos in July 2018), which is
                useful to know but is not scored.
 
+REPLICATION (registered 2026-10-03, after the events below were recovered and
+BEFORE any of them was measured). data/egx_index_events.RECOVERED_2026_10_03
+holds 35 events from 5 reviews (Jan 2021, Jul 2021, Jan 2022, Jan 2023, Jul
+2025) that were NOT in the original test. They are an out-of-sample check:
+  test     PRESSURE window only (the one that passed), same entry/exit, same
+           score, same 2,000-draw placebo, ONE test so no Bonferroni.
+  verdict  REPLICATES: n >= 20, mean > 0, p < 0.05, and the cluster check (all 5
+           reviews present, majority of review means positive, positive without
+           the largest review). Otherwise FAILS TO REPLICATE.
+  also     additions-only typical-price implementability, descriptive.
+A failure here outweighs the original pass: these events were chosen by nothing
+but what free sources happened to keep.
+
+BATCH B (registered 2026-10-03, after batch A FAILED and before B was measured).
+RECOVERED_2026_10_03_B: 20 events from Jan 2015, Jan 2016, Jan 2017 (Al Mal
+archive). Same test as batch A. With 3 reviews it cannot meet the 5-review cluster
+rule, so its best possible verdict is SUPPORTIVE (n >= 20, mean > 0, p < 0.05)
+or NOT SUPPORTIVE. It is reported beside A and NEVER overturns A's verdict:
+looking for more data after a failure is exactly how a dead effect gets revived.
+
 LIMITS. About 70 measurable events across 11 reviews, 2017-2026, some reviews
 partial. Before September 2026 announcements came only 1-4 days before the
 effective date, so the pressure window is short. The equal-weight market
@@ -192,6 +212,90 @@ def run(seed: int = 0, index: str = "EGX30") -> dict:
              for s, lab in ((1, "added"), (-1, "removed"))}
     return {"index": index, "events": len(ev), "measured": len(meas), "table": pd.DataFrame(results),
             "runup": runup, "detail": meas}
+
+
+def replication(seed: int = 0, batch: str = "A") -> dict:
+    """Pre-registered out-of-sample check on the events recovered 2026-10-03.
+    batch 'A' (2021-2025, the registered test) or 'B' (2015-2017, descriptive)."""
+    from data.egx_index_events import events, RECOVERED_2026_10_03, RECOVERED_2026_10_03_B
+    keys = RECOVERED_2026_10_03 if batch == "A" else RECOVERED_2026_10_03_B
+    allev = pd.DataFrame(events())
+    key = list(zip(allev["announced"], allev["ticker"], allev["side"]))
+    new = allev[[k in keys for k in key]].reset_index(drop=True)
+    rets, market = _panel()
+    meas = measure(new, rets, market)
+    d = meas.dropna(subset=["pressure_score"])
+    n = len(d)
+    mean = float(d["pressure_score"].mean()) if n else np.nan
+    # placebo exclusions use ALL known events for each ticker, not just the new ones
+    pm = placebo(meas, allev, rets, market, "pressure", seed=seed) if n >= 5 else np.array([])
+    p = float((np.sum(pm >= mean) + 1) / (len(pm) + 1)) if len(pm) else np.nan
+    by_rev = d.groupby("effective")["pressure_score"].mean()
+    drop_top = float(d[d["effective"] != by_rev.idxmax()]["pressure_score"].mean()) if len(by_rev) > 1 else np.nan
+    cluster_ok = bool(len(by_rev) >= MIN_REVIEWS and (by_rev > 0).mean() > 0.5 and drop_top > 0)
+    ok = n >= MIN_EVENTS and mean > 0 and p < ALPHA and cluster_ok
+    side = {lab: (int((d["side"] == s).sum()), float(d[d["side"] == s]["pressure_ar"].mean()))
+            for s, lab in ((1, "added"), (-1, "removed"))}
+    return {"events": len(new), "n": n, "mean_score": mean, "median": float(d["pressure_score"].median()),
+            "hit": float((d["pressure_score"] > 0).mean()), "placebo_mean": float(pm.mean()) if len(pm) else np.nan,
+            "p": p, "by_review": by_rev.round(4).to_dict(), "without_top_review": drop_top,
+            "sides": side, "detail": d,
+            "verdict": ("REPLICATES" if ok else "FAILS TO REPLICATE") if batch == "A" else
+                       ("SUPPORTIVE" if n >= MIN_EVENTS and mean > 0 and p < ALPHA else "NOT SUPPORTIVE")}
+
+
+def implementability(index: str = "EGX30", delays=(0, 1), slippage: float = 0.0057,
+                     sizes=(1000, 2000, 5000)) -> pd.DataFrame:
+    """Can the ADDITIONS leg actually be captured? (added 2026-10-03; descriptive,
+    not part of the pre-registered test).
+
+    The test enters at the CLOSE of the first session after the announcement
+    and exits at the CLOSE one session after the effective date. A person buys
+    DURING a session at roughly the typical price (H+L+C)/3 and pays ~0.57%
+    above it (measured on the live account). EGX has no short selling, so only
+    added stocks can be traded. `delay` = extra sessions before acting.
+    """
+    from data.egx_index_events import events, events70
+    from backtest.engine import load_fill_ratio
+    from backtest.fees import round_trip_cost
+    ev = pd.DataFrame(events70() if index == "EGX70" else events())
+    ev = ev[ev["side"] == 1]
+    rets, market = _panel()
+    ratio = load_fill_ratio(list(rets.columns)).reindex(index=rets.index, columns=rets.columns).fillna(1.0)
+    idx, m = rets.index, market.to_numpy()
+    rows = []
+    for e in ev.itertuples():
+        if e.ticker not in rets.columns:
+            continue
+        ann, eff, exit_p = positions(idx, e.announced, e.effective)
+        s = rets[e.ticker].to_numpy()
+        tp = ratio[e.ticker].to_numpy()
+        for d in delays:
+            b, x = ann + d, exit_p + d
+            if x >= len(idx) or b >= x:
+                continue
+            w = s[b + 1:x + 1]
+            if np.isfinite(w).sum() < max(1, int(0.6 * (x - b))):
+                continue
+            # bought at typical(b), held closes b..x, sold at typical(x)
+            stock = (1.0 / tp[b]) * np.prod(1 + np.nan_to_num(w)) * tp[x] - 1.0
+            mkt = np.prod(1 + np.nan_to_num(m[b + 1:x + 1])) - 1.0
+            close_ar = _window_ar(s, m, ann, exit_p)
+            rows.append({"ticker": e.ticker, "effective": e.effective, "delay": d,
+                         "close_model_ar": close_ar, "typical_ar": stock - mkt,
+                         "stock_ret": stock})
+    d = pd.DataFrame(rows)
+    out = []
+    for dl, g in d.groupby("delay"):
+        rec = {"delay_sessions": dl, "n": len(g), "close_model": g["close_model_ar"].mean(),
+               "typical_fill": g["typical_ar"].mean(), "median": g["typical_ar"].median(),
+               "hit": float((g["typical_ar"] > 0).mean())}
+        for p in sizes:
+            cost = round_trip_cost(p)["total_egp"] / p + 2 * slippage
+            rec[f"net_{p}"] = g["typical_ar"].mean() - cost
+            rec[f"net_abs_{p}"] = g["stock_ret"].mean() - cost      # what the account actually makes
+        out.append(rec)
+    return pd.DataFrame(out)
 
 
 def format_report(res: dict) -> str:

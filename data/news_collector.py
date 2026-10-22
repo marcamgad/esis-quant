@@ -257,7 +257,17 @@ def build_name_index() -> list:
     for t, aliases in QUERY_ALIASES.items():
         for a in aliases:
             arabic_names.setdefault(a, t)
-    for a, t in arabic_names.items():
+    pairs = list(arabic_names.items())
+    # Full and short names from Mubasher (data/arabic_names.py), '|'-joined.
+    with get_connection() as conn:
+        for t, joined in conn.execute(
+                "SELECT ticker, name_arabic FROM stocks WHERE name_arabic IS NOT NULL AND name_arabic <> ''"):
+            pairs += [(a, t) for a in joined.split("|") if a]
+    seen = set()
+    for a, t in pairs:
+        if (a, t) in seen:
+            continue
+        seen.add((a, t))
         if not re.search(r"[؀-ۿ]", a):
             if len(a.split()) >= 2:
                 idx.append((re.compile(r"(?<!\w)" + re.escape(a) + r"(?!\w)", re.I), t, "text"))
@@ -265,15 +275,31 @@ def build_name_index() -> list:
         if len(a) < 3:
             continue
         if len(a.split()) >= 2 or a in DISTINCT_ARABIC:
-            idx.append((re.compile(re.escape(a)), t, "text"))
+            idx.append((re.compile(r"(?<![؀-ۿ])" + _arabic_pattern(a) + r"(?![؀-ۿ])"), t, "text"))
         else:
             # A one-word Arabic name is often an ordinary word too: "فوري"
             # (Fawry) means "immediate", and linked a Luxor governor's order about
             # "immediate handling of violations" to FWRY. Arabic business press
             # sets company names in quotation marks, so a single word only counts
             # when quoted.
-            idx.append((re.compile(r"[«\"“']\s*" + re.escape(a) + r"\s*[»\"”']"), t, "text"))
+            idx.append((re.compile(r"[«\"“']\s*" + _arabic_pattern(a) + r"\s*[»\"”']"), t, "text"))
     return idx
+
+
+# Spellings Arabic press varies freely: hamza on alef, taa marbuta vs haa, final
+# yaa vs alef maqsura, "و" attached or spaced ("و التنمية" / "والتنمية").
+_AR_VARIANTS = {"ا": "[اأإآ]", "أ": "[اأإآ]", "إ": "[اأإآ]", "آ": "[اأإآ]",
+                "ة": "[ةه]", "ه": "[ةه]", "ى": "[ىي]", "ي": "[ىي]"}
+
+
+def _arabic_pattern(name: str) -> str:
+    pat = ""
+    words = name.split()
+    for i, w in enumerate(words):
+        pat += "".join(_AR_VARIANTS.get(ch, re.escape(ch)) for ch in w)
+        if i < len(words) - 1:
+            pat += r"\s*" if w == "و" else r"\s+"       # "و التنمية" == "والتنمية"
+    return pat
 
 
 # One-word Arabic names distinctive enough to match unquoted.

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "esis-quant": {
+      "type": "stdio",
+      "command": "C:/path/to/python3.11/python.exe",
+      "args": ["-m", "esis_mcp"],
+      "env": {
+        "PYTHONPATH": "C:/path/to/esis-quant",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

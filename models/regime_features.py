@@ -78,6 +78,13 @@ def _load_price_panel(tickers=None) -> dict:
                 panel[ticker] = df
     if not panel:
         raise ValueError("No price data in daily_ohlcv -- run Layer 1 collectors first")
+    # corroborated, still-unadjusted splits (data/ca_factors.py) -- a fake -50%
+    # day would otherwise read as a crash in breadth and volatility
+    from data.ca_factors import corroborated_events, adjust_series
+    ev = corroborated_events()
+    for t, e in ev.groupby("ticker"):
+        if t in panel:
+            panel[t]["close"], _ = adjust_series(panel[t]["close"], e)
     return panel
 
 

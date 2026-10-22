@@ -90,41 +90,10 @@ class WriteBoundaryViolation(RuntimeError):
     """The agent attempted to write outside its allow-list."""
 
 
-# Bookkeeping tables SQLite itself writes while executing an allowed statement
-# (DDL updates sqlite_master; AUTOINCREMENT updates sqlite_sequence).
-_INTERNAL = {"sqlite_master", "sqlite_temp_master", "sqlite_schema", "sqlite_sequence"}
-_READ_PRAGMAS = {"table_info", "table_xinfo", "index_list", "index_info", "index_xinfo",
-                 "foreign_key_list", "table_list"}
+# The engine-level boundary itself lives in ops.agent_guard, shared by every agent.
+from ops.agent_guard import make_authorizer as _make_authorizer  # noqa: E402
 
-
-def _authorize(action, arg1, arg2, dbname, source):
-    """sqlite3 authorizer: the engine-level write boundary.
-
-    Reads, functions and transactions pass. Row writes, DDL and index changes
-    pass only for tables in WRITABLE. ATTACH, views, triggers, virtual tables
-    and PRAGMA writes are always denied. Unknown action codes are denied, so a
-    future SQLite feature fails closed.
-    """
-    s = sqlite3
-    allow = s.SQLITE_OK
-    if action in (s.SQLITE_READ, s.SQLITE_SELECT, s.SQLITE_FUNCTION, s.SQLITE_TRANSACTION,
-                  s.SQLITE_SAVEPOINT, getattr(s, "SQLITE_RECURSIVE", 33)):
-        return allow
-    if action == s.SQLITE_REINDEX:
-        return allow                                          # CREATE INDEX builds it; no row changes
-    if action == s.SQLITE_PRAGMA:
-        # reads only: a bare pragma, or a schema-introspection pragma whose
-        # argument is a table/index name. `PRAGMA x = value` is denied.
-        if arg2 is None or str(arg1).lower() in _READ_PRAGMAS:
-            return allow
-        return s.SQLITE_DENY
-    if action in (s.SQLITE_INSERT, s.SQLITE_UPDATE, s.SQLITE_DELETE):
-        return allow if (arg1 in WRITABLE or arg1 in _INTERNAL) else s.SQLITE_DENY
-    if action in (s.SQLITE_CREATE_TABLE, s.SQLITE_DROP_TABLE):
-        return allow if arg1 in WRITABLE else s.SQLITE_DENY
-    if action in (s.SQLITE_CREATE_INDEX, s.SQLITE_DROP_INDEX, s.SQLITE_ALTER_TABLE):
-        return allow if arg2 in WRITABLE else s.SQLITE_DENY
-    return s.SQLITE_DENY
+_authorize = _make_authorizer(WRITABLE)
 
 
 class _GuardedConnection:
@@ -765,6 +734,20 @@ def scan(persist: bool = True, checks=ALL_CHECKS) -> pd.DataFrame:
         findings.sort(key=lambda f: SEVERITY_ORDER.get(f.severity, 9))
         if persist:
             now = pd.Timestamp.now().isoformat(timespec="seconds")
+            # CLOSURE (Stage 4). A finding this scan no longer produces is no
+            # longer true -- KORA/KASABF findings sat "open" and "critical" for
+            # weeks after both were sold. Close what was not seen; checks that
+            # failed to run this time keep their findings open (absence of a
+            # check is not evidence the problem is gone).
+            failed = {f.subject for f in findings if f.kind == "check_failed"}
+            seen = {_fingerprint(f.kind, f.subject or "") for f in findings}
+            if not failed:
+                for (fp,) in conn.execute("SELECT fingerprint FROM research_findings "
+                                          "WHERE resolved_at IS NULL").fetchall():
+                    if fp not in seen:
+                        conn.execute("UPDATE research_findings SET resolved_at = ?, "
+                                     "detail = COALESCE(detail,'') || ' | auto-closed: no longer observed' "
+                                     "WHERE fingerprint = ?", (now, fp))
             for f in findings:
                 fp = _fingerprint(f.kind, f.subject or "")
                 conn.execute(

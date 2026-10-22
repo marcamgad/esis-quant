@@ -362,6 +362,8 @@ def write_ticket(path: str = None, use_allocator: bool = True, exclude=None,
     system says get out of a name, that line always prints.
     """
     from ops.trade_list import latest_trade_list
+    from ops.agent_guard import assert_not_halted
+    assert_not_halted()                     # no ticket while the Sentinel has halted the system
     tl = latest_trade_list()
     if tl.empty:
         raise RuntimeError("no suggestion logged yet -- run the daily job first")

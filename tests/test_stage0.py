@@ -30,6 +30,12 @@ def temp_db(tmp_path, monkeypatch):
     return config.DB_PATH
 
 
+def test_tests_never_point_at_the_real_database():
+    import os
+    from tests.conftest import REAL_DB
+    assert os.path.abspath(config.DB_PATH) != os.path.abspath(REAL_DB)
+
+
 # --- frozen regime vintages -------------------------------------------------
 
 def _two_regime_data(n=400, seed=0):
@@ -133,6 +139,40 @@ def test_settlement_fallback_skips_friday_and_saturday(temp_db):
     from ops.portfolio_tracker import _settlement_date
     assert _settlement_date("2030-01-03", days=2) == "2030-01-07"   # Thu -> Mon
     assert _settlement_date("2030-01-06", days=2) == "2030-01-08"   # Sun -> Tue
+
+
+# --- stockanalysis dated history backfill -----------------------------------------
+
+HIST_PAGE = ('data:[{a:3.02,c:3.02,h:3.02,l:2.54,o:2.74,t:"2026-10-01",v:147612435,ch:10.22},'
+             '{a:2.74,c:2.74,h:2.76,l:1.99,o:2.48,t:"2026-09-30",v:195447348,ch:10.48},'
+             '{a:.743,c:.743,h:.753,l:.72,o:.741,t:"2026-09-29",v:26596979,ch:.27}]')
+
+
+def test_parse_history_reads_dated_bars():
+    from data.stockanalysis import parse_history
+    h = parse_history(HIST_PAGE)
+    assert list(h.index.strftime("%Y-%m-%d")) == ["2026-09-29", "2026-09-30", "2026-10-01"]
+    assert h.loc["2026-09-30", "low"] == 1.99 and h.loc["2026-09-29", "close"] == 0.743
+
+
+def test_backfill_never_creates_dates_or_overwrites(temp_db, monkeypatch):
+    from data import stockanalysis as sa
+    from data import fundamentals
+    days = pd.bdate_range("2026-08-03", "2026-09-30")
+    _seed_prices(days)                                      # sessions exist through 09-30
+    from data.collectors import DataCollector
+    with get_connection() as conn:
+        DataCollector._ensure_source_column(conn)
+        conn.execute("INSERT INTO daily_ohlcv (ticker, date, close, adjusted_close, volume, source) "
+                     "VALUES ('CRST', '2026-09-30', 9.99, 9.99, 1, 'vendor')")
+    monkeypatch.setattr(fundamentals, "_fetch", lambda url, timeout=25: HIST_PAGE)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    sa.backfill_history(["CRST"])
+    with get_connection() as conn:
+        rows = dict(conn.execute("SELECT date, close FROM daily_ohlcv WHERE ticker='CRST'").fetchall())
+    assert "2026-10-01" not in rows                          # not an accepted session: not minted
+    assert rows["2026-09-30"] == 9.99                        # vendor row untouched
+    assert rows["2026-09-29"] == 0.743                       # gap filled
 
 
 # --- ingest ------------------------------------------------------------------------

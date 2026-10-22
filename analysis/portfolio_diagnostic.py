@@ -142,8 +142,10 @@ def scenarios(values: pd.Series, win: pd.DataFrame) -> dict:
     full = load_price_returns()
     out = {}
 
-    # broad market fall, scaled by each name's beta to the equal-weight market
-    mkt = full.mean(axis=1).tail(LOOKBACK * 3)
+    # broad market fall, scaled by each name's beta to the EGX30 (since 2026-10-04;
+    # the equal-weight average used before is not an index anyone quotes or holds)
+    from data import market
+    mkt = market.returns(full.index).dropna().tail(LOOKBACK * 3)
     betas = {}
     for t in w.index:
         r = full[t].reindex(mkt.index)

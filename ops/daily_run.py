@@ -157,8 +157,17 @@ def main(argv=None) -> int:
         print("\n" + daily_report(write=True))
     except Exception as exc:  # noqa: BLE001
         log.warning("daily report could not be generated: %s", exc)
+
+    # Agent 8: one brief across every agent, saved to reports/brief_YYYY-MM-DD.md
+    try:
+        from ops.chief_of_staff import run as _brief
+        print("\n" + _brief())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("morning brief could not be generated: %s", exc)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from ops.keep_awake import keep_awake
+    with keep_awake():                 # a sleeping laptop killed runs mid-way before
+        raise SystemExit(main())

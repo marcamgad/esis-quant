@@ -42,6 +42,21 @@ def main() -> int:
         r = refresh(tickers=tickers)
         msg = (f"fundamentals: {r['tickers']} tickers, {r['rows_stored']} rows, "
                f"{len(r['failed'])} failed, {(time.time() - t0) / 60:.1f} min")
+        # Agent 3: split/bonus records change weekly at most, and a full scan
+        # makes ~400 requests, so it lives here rather than in the daily job.
+        try:
+            from ops.reference_librarian import run as _librarian
+            lib = _librarian()
+            t = lib["table"]
+            msg += (f" | librarian: {lib['candidates']} moves, "
+                    f"{int((t['verdict'] == 'corroborated').sum()) if len(t) else 0} corroborated")
+        except Exception as exc:  # noqa: BLE001
+            msg += f" | librarian skipped: {exc}"
+        try:
+            from data.egx_holidays import derive as _holidays
+            msg += f" | holidays through {_holidays()['through']}"
+        except Exception as exc:  # noqa: BLE001
+            msg += f" | holidays skipped: {exc}"
         print(msg)
         finish_run(run_id, ok=True, message=msg)
         return 0

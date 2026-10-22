@@ -32,7 +32,9 @@ import config
 
 # Module-name fragments that must never be reachable from the live trade path.
 BANNED = ("sentiment", "tft", "causal", "double_ml", "alpha_score",
-          "fama_macbeth", "rank_persistence")
+          "fama_macbeth", "rank_persistence",
+          # Agent 7: a trial that passes earns a paper period, never a ticket line
+          "research.lab")
 
 # The modules that constitute the live path: data in, trade list out.
 LIVE_ENTRYPOINTS = ("ops.daily_run", "ops.trade_list", "portfolio.system",

@@ -359,6 +359,12 @@ def daily_report(write: bool = True) -> str:
     except Exception as exc:  # noqa: BLE001
         lines.append(f"    unavailable: {exc}")
 
+    try:
+        from ops.yardstick import format_section as _yardstick
+        lines.append(_yardstick())
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"\n[2c] VS DOING NOTHING  unavailable: {exc}")
+
     lines.append("\n[3] YOUR DECISION on this suggestion")
     if decision:
         note = str(today_dec["note"].iloc[0])

@@ -76,6 +76,10 @@ CBE_POLICY_RATE_SCHEDULE = [
     ("2025-04-17", 0.2525),
     ("2025-08-28", 0.2225),
     ("2026-01-01", 0.2025),   # carried forward -- least reliable segment
+    # VERIFIED 2026-10-03: 100bp cut to 19.00% deposit / 20.00% lending at the
+    # first 2026 meeting (Dailynewsegypt 2026-02-15), then held at five meetings
+    # through 26 Sep 2026 (EnterpriseAM 2026-09-27).
+    ("2026-02-12", 0.1900),
 ]
 
 

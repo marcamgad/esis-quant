@@ -239,9 +239,12 @@ class DataCollector:
                 # any date Yahoo has since retracted). Delete the covered
                 # range first so the table always reflects exactly what the
                 # latest fetch returned, not an accumulation of past runs.
+                # sa_history rows (dated stockanalysis backfill) are also kept: a
+                # vendor row on the same date still replaces them below, but a date
+                # the vendor simply lacks keeps its backfilled price.
                 conn.execute(
                     "DELETE FROM daily_ohlcv WHERE ticker = ? AND date BETWEEN ? AND ? "
-                    "AND (source IS NULL OR source != 'broker')",
+                    "AND (source IS NULL OR source NOT IN ('broker', 'sa_history'))",
                     (ticker, lo, hi),
                 )
                 if broker_dates:
@@ -321,7 +324,8 @@ class DataCollector:
         merged = pd.DataFrame(series)
         self._cross_check_usd_egp_latest(merged)
         self._store_macro(merged)
-        return {"stored": len(merged)}
+        egx = self.fetch_egx30_history()
+        return {"stored": len(merged), "egx30": egx}
 
     def _cross_check_usd_egp_latest(self, merged: pd.DataFrame):
         """Best-effort sanity check of the latest USD/EGP against a second
@@ -345,6 +349,10 @@ class DataCollector:
             logger.info("USD/EGP cross-check skipped: %s", exc)
 
     def _store_macro(self, df: pd.DataFrame):
+        # COALESCE: a column this fetch did not get must NOT overwrite the value
+        # already stored. Before 2026-10-04 it did, so every Yahoo run (which has
+        # no EGX30 history) blanked egx30_level for every date it touched -- only
+        # 3 of 3,067 rows survived.
         with get_connection() as conn:
             for idx, r in df.iterrows():
                 cols = ["usd_egp", "brent_oil_usd", "gold_usd", "natural_gas_usd",
@@ -354,9 +362,47 @@ class DataCollector:
                     f"""INSERT INTO macro_daily (date, {', '.join(cols)})
                         VALUES (?, {', '.join(['?'] * len(cols))})
                         ON CONFLICT(date) DO UPDATE SET
-                        {', '.join(f'{c}=excluded.{c}' for c in cols)}""",
+                        {', '.join(f'{c}=COALESCE(excluded.{c}, macro_daily.{c})' for c in cols)}""",
                     [idx.strftime("%Y-%m-%d")] + values,
                 )
+
+    # Mubasher publishes the full daily EGX30 history (1998-) as a CSV linked from
+    # its index page (free, no account). Found 2026-10-04; Yahoo has no history.
+    MUBASHER_EGX30_PAGE = "https://www.mubasher.info/markets/EGX/indices/EGX30"
+    MUBASHER_EGX30_CSV = ("https://static.mubasher.info/File.MubasherCharts/"
+                          "File.Historical_Index_Charts_Dir/39d67d8ab4f4c10bf22aa353e27879133c.csv")
+
+    def fetch_egx30_history(self) -> dict:
+        """EGX30 daily close + traded value from Mubasher into macro_daily.
+        The CSV link is re-read from the index page each time (the file name is a
+        hash and may change); the known link is the fallback."""
+        import io
+        import re
+        import urllib.request
+        ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120"}
+        url = self.MUBASHER_EGX30_CSV
+        try:
+            page = urllib.request.urlopen(urllib.request.Request(self.MUBASHER_EGX30_PAGE, headers=ua),
+                                          timeout=30).read().decode("utf-8", "replace")
+            m = re.search(r'historical-data-url="([^"]+\.csv)"', page)
+            if m:
+                url = m.group(1)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fetch_egx30_history: index page failed (%s); using the known CSV link", exc)
+        try:
+            raw = urllib.request.urlopen(urllib.request.Request(url, headers=ua), timeout=60).read()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fetch_egx30_history: CSV failed: %s", exc)
+            return {"stored": 0, "error": str(exc)}
+        df = pd.read_csv(io.BytesIO(raw), header=None,
+                         names=["ts", "open", "high", "low", "close", "volume"])
+        df["date"] = pd.to_datetime(df["ts"].str.slice(0, 10), errors="coerce")
+        df = df.dropna(subset=["date", "close"]).drop_duplicates("date", keep="last")
+        df = df[df["date"] >= pd.Timestamp(config.HISTORY_START_DATE)].set_index("date")
+        out = pd.DataFrame({"egx30_level": df["close"].astype(float),
+                            "egx30_volume": pd.to_numeric(df["volume"], errors="coerce")})
+        self._store_macro(out)
+        return {"stored": len(out), "first": str(out.index.min().date()), "last": str(out.index.max().date())}
 
     # ------------------------------------------------------------------
     # CBE monetary policy decisions -- NOT IMPLEMENTED
